@@ -1,6 +1,7 @@
 // Local pass-through proxy: /<upstream-host>/<path> -> https://<upstream-host>/<path>.
 // Times the streaming response (TTFT, tokens/sec) and keeps every request in memory + a JSONL log.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
+import { createHmac, randomBytes } from "node:crypto"
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -23,6 +24,16 @@ const dir = process.env.TPS_HOME ?? join(homedir(), ".tps")
 const LOG = join(dir, "requests.jsonl")
 const MAX = 500
 
+// A per-user secret (0600) lets `tps` prove that whatever listens on the port is its own proxy, and not another
+// process squatting it to collect the API keys the CLI sends.
+function secret() {
+  mkdirSync(dir, { recursive: true })
+  chmodSync(dir, 0o700)
+  try { writeFileSync(join(dir, "secret"), randomBytes(32).toString("hex"), { flag: "wx", mode: 0o600 }) } catch {}
+  return readFileSync(join(dir, "secret"), "utf8")
+}
+export const sign = (nonce: string) => createHmac("sha256", secret()).update(nonce).digest("hex")
+
 const cliOf = (ua: string, host: string) => ua.match(/opencode|codex|claude/i)?.[0].toLowerCase() ?? host
 
 function loadLog(): Req[] {
@@ -34,7 +45,7 @@ function loadLog(): Req[] {
 
 // Throws if the port is taken (caller treats that as "a proxy is already running").
 export function startProxy(port: number, scheme = "https") {
-  mkdirSync(dir, { recursive: true })
+  secret() // creates TPS_HOME (0700) and the identity secret up front
   const reqs = loadLog()
   let nextId = Math.max(0, ...reqs.map((r) => r.id)) + 1
 
@@ -47,6 +58,7 @@ export function startProxy(port: number, scheme = "https") {
       if (req.headers.has("origin") || req.headers.has("sec-fetch-site") || !/^(127\.0\.0\.1|localhost):\d+$/.test(req.headers.get("host") ?? ""))
         return new Response("forbidden", { status: 403 })
       const url = new URL(req.url)
+      if (url.pathname === "/_tps/whoami") return new Response(sign(url.searchParams.get("nonce") ?? ""))
       if (url.pathname === "/_tps/state") return Response.json(reqs.slice(-200))
       const [, host, ...rest] = url.pathname.split("/")
       if (!host) return new Response("tps proxy", { status: 404 })

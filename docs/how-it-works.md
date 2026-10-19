@@ -38,6 +38,8 @@ press Esc in the CLI), the upstream request is cancelled too instead of being re
 Safety: the proxy binds to loopback, rejects requests carrying `Origin` or `Sec-Fetch-*` headers (browsers) and any
 `Host` that isn't `127.0.0.1` / `localhost` (DNS rebinding). It does not hold or log credentials.
 
+Port squatting: if the port is already taken when `tps` starts, it does not assume the listener is a tps proxy. It sends a random nonce to `/_tps/whoami` and requires the HMAC-SHA256 of that nonce under the per-user secret in `$TPS_HOME/secret` (file mode 0600, directory 0700). A listener that can't answer is refused and the CLI is never launched, so API keys are not sent to it.
+
 ## Metrics
 
 - **TTFT** = first-content-token time − request-forwarded time. Measured at the proxy, so it excludes the CLI's own
@@ -74,4 +76,5 @@ status row are restored. When output is piped, the CLI runs directly with no bar
 | Path | Purpose |
 |------|---------|
 | `~/.tps/requests.jsonl` | One JSON line per finished request (metadata only). The last 200 lines are reloaded on start. |
+| `~/.tps/secret` | Per-user identity secret (mode 0600), used to prove a listener on the port is your own proxy. |
 | `/_tps/state` | Local endpoint with the recent requests as JSON (used by the table and the bar). |

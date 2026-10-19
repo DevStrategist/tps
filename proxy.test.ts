@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { startProxy } from "./proxy"
+import { sign, startProxy } from "./proxy"
 
 process.env.TPS_HOME ??= "/tmp/tps-test"
 
@@ -58,4 +58,22 @@ test("refuses browser-originated requests", async () => {
   expect((await fetch(base, { headers: { origin: "https://evil.example" } })).status).toBe(403)
   expect((await fetch(base, { headers: { "sec-fetch-site": "cross-site" } })).status).toBe(403)
   server.stop(true)
+})
+
+test("proves its identity to tps, and tps refuses a squatter on the port", async () => {
+  const { server } = startProxy(0, "http")
+  const nonce = "abc123"
+  expect(await (await fetch(`http://127.0.0.1:${server.port}/_tps/whoami?nonce=${nonce}`)).text()).toBe(sign(nonce))
+  server.stop(true)
+
+  // A foreign listener that logs everything it receives and cannot sign the challenge.
+  const seen: string[] = []
+  const squatter = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => (seen.push(new URL(req.url).pathname), new Response("hi")) })
+  const p = Bun.spawn(["bun", "tps.ts", "claude", "--version"], {
+    env: { ...process.env, TPS_PORT: String(squatter.port) }, stdout: "pipe", stderr: "pipe",
+  })
+  expect(await p.exited).toBe(1)
+  expect(await new Response(p.stderr).text()).toContain("refusing")
+  expect(seen.every((x) => x.startsWith("/_tps/whoami"))).toBe(true) // only the challenge, no CLI traffic or keys
+  squatter.stop(true)
 })

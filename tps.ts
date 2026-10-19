@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 // tps            live view of every request flowing through the proxy
 // tps <cli> ...  run claude | codex | opencode through the proxy; args go straight to the CLI
+import { randomBytes } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import pkg from "./package.json"
-import { startProxy, type Req } from "./proxy"
+import { sign, startProxy, type Req } from "./proxy"
 
 const PORT = Number(process.env.TPS_PORT ?? 8787)
 const BASE = `http://127.0.0.1:${PORT}`
@@ -22,9 +23,18 @@ env:
   TPS_PORT   proxy port (default 8787)
   TPS_HOME   where the request log lives (default ~/.tps)`
 
-// NOTE: if the port is taken we assume it's another tps. An embedded proxy dies with the CLI that started it;
-// keep `tps` open in a side pane to host it for several sessions.
-const ensureProxy = () => { try { startProxy(PORT) } catch {} }
+// NOTE: an embedded proxy dies with the CLI that started it; keep `tps` open in a side pane to host it for several sessions.
+async function ensureProxy() {
+  try { startProxy(PORT); return } catch {}
+  // Port taken: only trust it if it proves it is *our* proxy (same per-user secret). Anything else could be
+  // squatting the port to collect the API keys the CLI is about to send.
+  const nonce = randomBytes(16).toString("hex")
+  const got = await fetch(`${BASE}/_tps/whoami?nonce=${nonce}`, { signal: AbortSignal.timeout(2000) }).then((r) => r.text()).catch(() => "")
+  if (got !== sign(nonce)) {
+    console.error(`tps: port ${PORT} is held by something that isn't your tps proxy; refusing to send your credentials to it.\nStop it, or set TPS_PORT to a free port.`)
+    process.exit(1)
+  }
+}
 
 const readJson = (p: string) => existsSync(p) ? Bun.JSONC.parse(readFileSync(p, "utf8")) as any : {}
 
@@ -70,7 +80,7 @@ const launchers: Record<string, (a: string[]) => [string[], Record<string, strin
 
 async function run(cli: string) {
   const [argv, env] = launchers[cli](args)
-  ensureProxy()
+  await ensureProxy()
   const full = { ...process.env, ...env }
   const out = process.stdout
   if (!out.isTTY || !process.stdin.isTTY) { // piped / scripted: no status bar
@@ -149,7 +159,7 @@ function draw(all: Req[]) {
 }
 
 async function view() {
-  ensureProxy()
+  await ensureProxy()
   process.stdout.write("\x1b[?1049h\x1b[?25l") // alt screen, hide cursor
   const quit = () => { process.stdout.write("\x1b[?25h\x1b[?1049l"); process.exit(0) }
   process.on("SIGINT", quit)
