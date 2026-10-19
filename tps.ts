@@ -2,6 +2,7 @@
 // tps            live view of every request flowing through the proxy
 // tps <cli> ...  run claude | codex | opencode through the proxy; args go straight to the CLI
 import { randomBytes } from "node:crypto"
+import { connect } from "node:net"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import pkg from "./package.json"
@@ -26,6 +27,16 @@ env:
 const REFUSED = `tps: port ${PORT} is held by something that isn't your tps proxy; refusing to send your credentials to it.
 Stop it, or set TPS_PORT to a free port.`
 
+// Plain TCP connect: true only if the OS says connection refused, i.e. nothing is listening on the port.
+// (Not derived from fetch's error codes, which differ between platforms and for connections cut mid-request.)
+const nobodyListening = () =>
+  new Promise<boolean>((resolve) => {
+    const s = connect(PORT, "127.0.0.1")
+    s.setTimeout(1000, () => { s.destroy(); resolve(false) })
+    s.once("connect", () => { s.destroy(); resolve(false) })
+    s.once("error", (e: NodeJS.ErrnoException) => resolve(e.code === "ECONNREFUSED"))
+  })
+
 // Does whatever listens on the port prove it is *our* proxy (same per-user secret, bound to this port)?
 //   "ok"      it answered correctly
 //   "refused" nothing is listening, so nothing can receive the CLI's API keys
@@ -35,7 +46,7 @@ async function verify(): Promise<"ok" | "refused" | "foreign"> {
   try {
     const got = await (await fetch(`${BASE}/_tps/whoami?nonce=${nonce}`, { signal: AbortSignal.timeout(2000) })).text()
     return got === sign(`${nonce}:${PORT}`) ? "ok" : "foreign"
-  } catch (e) { return (e as { code?: string })?.code === "ConnectionRefused" ? "refused" : "foreign" }
+  } catch { return (await nobodyListening()) ? "refused" : "foreign" }
 }
 
 // NOTE: an embedded proxy dies with the CLI that started it; keep `tps` open in a side pane to host it for several sessions.
