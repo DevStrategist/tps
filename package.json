@@ -1,0 +1,13 @@
+{
+  "name": "tps",
+  "version": "0.1.0",
+  "description": "Live time-to-first-token and tokens/sec for coding CLIs (Claude Code, Codex, OpenCode), measured on the real streaming response.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/DevStrategist/tps.git" },
+  "homepage": "https://github.com/DevStrategist/tps#readme",
+  "bugs": { "url": "https://github.com/DevStrategist/tps/issues" },
+  "keywords": ["tokens-per-second", "ttft", "latency", "benchmark", "llm", "cli", "claude-code", "codex", "opencode", "proxy"],
+  "bin": { "tps": "./tps.ts" },
+  "files": ["tps.ts", "proxy.ts", "README.md", "LICENSE", "docs"],
+  "scripts": { "test": "bun test" }
+}
