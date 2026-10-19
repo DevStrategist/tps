@@ -40,7 +40,7 @@ Safety: the proxy binds to loopback, rejects requests carrying `Origin` or `Sec-
 
 Port squatting: if the port is already taken when `tps` starts, it does not assume the listener is a tps proxy. It sends a random nonce to `/_tps/whoami` and requires the HMAC-SHA256 of that nonce under the per-user secret in `$TPS_HOME/secret` (file mode 0600, directory 0700). The answer is signed together with the proxy's own port, so a squatter can't relay the challenge to a real proxy on another port. A listener that can't answer is refused and the CLI is never launched, so API keys are not sent to it.
 
-The check repeats twice a second while the CLI runs. If a proxy that `tps` attached to exits and something foreign takes the port, `tps` stops the CLI and exits with an error. This narrows the window to about half a second; it cannot close it, because loopback TCP has no stronger identity and these CLIs only accept an HTTP base URL (no Unix sockets).
+The check repeats twice a second while the CLI runs and fails closed: only a refused connection (nothing listening, so nothing can receive keys) counts as safe. A wrong answer, a timeout (a squatter can accept and simply hang), a reset or garbage all count as foreign. If a proxy that `tps` attached to exits and something foreign takes the port, `tps` stops the CLI and exits with an error. This narrows the window to about half a second; it cannot close it, because loopback TCP has no stronger identity and these CLIs only accept an HTTP base URL (no Unix sockets).
 
 ## Metrics
 

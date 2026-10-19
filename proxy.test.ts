@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test"
-import { sign, startProxy } from "./proxy"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-process.env.TPS_HOME ??= "/tmp/tps-test"
+// Must be set before ./proxy loads (it reads TPS_HOME at import) so tests never touch the real ~/.tps,
+// and child `tps` processes spawned below share this test's secret.
+process.env.TPS_HOME = mkdtempSync(join(tmpdir(), "tps-test-"))
+const { sign, startProxy } = await import("./proxy")
 
 // Fake Anthropic upstream: 300ms before the first token, then 5 deltas 50ms apart, usage says 50 tokens.
 test("measures TTFT, tokens and tps from an Anthropic-style SSE stream", async () => {
@@ -80,23 +85,43 @@ test("proves its identity to tps, and tps refuses a squatter on the port", async
   squatter.stop(true)
 })
 
-test("tps kills the CLI if a foreign listener takes over the proxy port mid-session", async () => {
+// A squatter that answers wrongly, and one that accepts the connection and never answers, must both stop the CLI.
+for (const [name, handler] of [
+  ["answers wrongly", () => new Response("evil")],
+  ["never answers", () => new Promise<Response>(() => {})],
+] as const) {
+  test(`tps kills the CLI if a foreign listener that ${name} takes over the proxy port mid-session`, async () => {
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
+    const port = probe.port
+    probe.stop(true)
+    const { server } = startProxy(port, "http") // a genuine proxy tps will attach to
+
+    // fake `claude` that just sleeps, so tps has a long-running child to guard
+    const bin = `/tmp/tps-fakebin-${port}`
+    await Bun.$`mkdir -p ${bin} && printf '#!/bin/sh\nexec sleep 30\n' > ${bin}/claude && chmod +x ${bin}/claude`
+    const p = Bun.spawn(["bun", "tps.ts", "claude"], {
+      env: { ...process.env, TPS_PORT: String(port), PATH: `${bin}:${process.env.PATH}` }, stdout: "pipe", stderr: "pipe",
+    })
+    await Bun.sleep(1200)
+    server.stop(true) // real proxy goes away...
+    const squatter = Bun.serve({ hostname: "127.0.0.1", port, fetch: handler }) // ...squatter moves in
+    expect(await p.exited).toBe(1)
+    expect(await new Response(p.stderr).text()).toContain("refusing")
+    squatter.stop(true)
+  }, 15000)
+}
+
+test("tps leaves the CLI alone when the proxy simply goes away (nothing is listening to receive keys)", async () => {
   const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
   const port = probe.port
   probe.stop(true)
-  const { server } = startProxy(port, "http") // a genuine proxy tps will attach to
-
-  // fake `claude` that just sleeps, so tps has a long-running child to guard
+  const { server } = startProxy(port, "http")
   const bin = `/tmp/tps-fakebin-${port}`
-  await Bun.$`mkdir -p ${bin} && printf '#!/bin/sh\nsleep 30\n' > ${bin}/claude && chmod +x ${bin}/claude`
+  await Bun.$`mkdir -p ${bin} && printf '#!/bin/sh\nexec sleep 3\n' > ${bin}/claude && chmod +x ${bin}/claude`
   const p = Bun.spawn(["bun", "tps.ts", "claude"], {
     env: { ...process.env, TPS_PORT: String(port), PATH: `${bin}:${process.env.PATH}` }, stdout: "pipe", stderr: "pipe",
   })
   await Bun.sleep(1200)
-  server.stop(true) // real proxy goes away...
-  const squatter = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("evil") }) // ...squatter moves in
-  const code = await p.exited
-  expect(code).toBe(1)
-  expect(await new Response(p.stderr).text()).toContain("refusing")
-  squatter.stop(true)
-})
+  server.stop(true) // proxy gone, nobody replaces it
+  expect(await p.exited).toBe(0) // CLI ran to its own end instead of being killed
+}, 15000)

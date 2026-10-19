@@ -27,13 +27,15 @@ const REFUSED = `tps: port ${PORT} is held by something that isn't your tps prox
 Stop it, or set TPS_PORT to a free port.`
 
 // Does whatever listens on the port prove it is *our* proxy (same per-user secret, bound to this port)?
-// "foreign" = something else answered, which could be squatting the port to collect the CLI's API keys.
-async function verify(): Promise<"ok" | "foreign" | "down"> {
+//   "ok"      it answered correctly
+//   "refused" nothing is listening, so nothing can receive the CLI's API keys
+//   "foreign" anything else: wrong answer, no answer (a squatter can accept and just hang), reset, garbage. Fail closed.
+async function verify(): Promise<"ok" | "refused" | "foreign"> {
   const nonce = randomBytes(16).toString("hex")
   try {
     const got = await (await fetch(`${BASE}/_tps/whoami?nonce=${nonce}`, { signal: AbortSignal.timeout(2000) })).text()
     return got === sign(`${nonce}:${PORT}`) ? "ok" : "foreign"
-  } catch { return "down" }
+  } catch (e) { return (e as { code?: string })?.code === "ConnectionRefused" ? "refused" : "foreign" }
 }
 
 // NOTE: an embedded proxy dies with the CLI that started it; keep `tps` open in a side pane to host it for several sessions.
