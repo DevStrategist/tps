@@ -58,7 +58,8 @@ export function startProxy(port: number, scheme = "https") {
       if (req.headers.has("origin") || req.headers.has("sec-fetch-site") || !/^(127\.0\.0\.1|localhost):\d+$/.test(req.headers.get("host") ?? ""))
         return new Response("forbidden", { status: 403 })
       const url = new URL(req.url)
-      if (url.pathname === "/_tps/whoami") return new Response(sign(url.searchParams.get("nonce") ?? ""))
+      // Signed together with our own port, so a squatter can't relay the challenge to a real proxy on another port.
+      if (url.pathname === "/_tps/whoami") return new Response(sign(`${url.searchParams.get("nonce") ?? ""}:${server.port}`))
       if (url.pathname === "/_tps/state") return Response.json(reqs.slice(-200))
       const [, host, ...rest] = url.pathname.split("/")
       if (!host) return new Response("tps proxy", { status: 404 })

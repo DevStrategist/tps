@@ -96,7 +96,7 @@ Details and how to add another CLI: [docs/how-it-works.md](docs/how-it-works.md)
 ## Data and privacy
 
 - The proxy listens on `127.0.0.1` only and refuses requests that come from a browser.
-- Before sending your CLI to an already-running proxy, `tps` checks that it is *your* proxy (it must answer a challenge using a per-user secret in `~/.tps/secret`, mode 0600). If another program is squatting the port, `tps` refuses to start rather than hand it your API keys.
+- Before sending your CLI to an already-running proxy, `tps` checks that it is *your* proxy (it must answer a challenge using a per-user secret in `~/.tps/secret`, mode 0600). If another program is squatting the port, `tps` refuses to start rather than hand it your API keys, and it keeps re-checking while the CLI runs.
 - Your CLI's credentials pass through to the real API untouched. `tps` never stores or logs them.
 - The log (`~/.tps/requests.jsonl`) holds **only metadata**: timestamp, CLI, API host, model, TTFT, token count,
   tokens/sec, duration, HTTP status. No prompts, no responses, no headers.

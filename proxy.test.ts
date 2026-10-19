@@ -63,7 +63,9 @@ test("refuses browser-originated requests", async () => {
 test("proves its identity to tps, and tps refuses a squatter on the port", async () => {
   const { server } = startProxy(0, "http")
   const nonce = "abc123"
-  expect(await (await fetch(`http://127.0.0.1:${server.port}/_tps/whoami?nonce=${nonce}`)).text()).toBe(sign(nonce))
+  const answer = await (await fetch(`http://127.0.0.1:${server.port}/_tps/whoami?nonce=${nonce}`)).text()
+  expect(answer).toBe(sign(`${nonce}:${server.port}`))
+  expect(answer).not.toBe(sign(`${nonce}:${server.port + 1}`)) // proof is bound to the port, so it can't be relayed
   server.stop(true)
 
   // A foreign listener that logs everything it receives and cannot sign the challenge.
@@ -75,5 +77,26 @@ test("proves its identity to tps, and tps refuses a squatter on the port", async
   expect(await p.exited).toBe(1)
   expect(await new Response(p.stderr).text()).toContain("refusing")
   expect(seen.every((x) => x.startsWith("/_tps/whoami"))).toBe(true) // only the challenge, no CLI traffic or keys
+  squatter.stop(true)
+})
+
+test("tps kills the CLI if a foreign listener takes over the proxy port mid-session", async () => {
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
+  const port = probe.port
+  probe.stop(true)
+  const { server } = startProxy(port, "http") // a genuine proxy tps will attach to
+
+  // fake `claude` that just sleeps, so tps has a long-running child to guard
+  const bin = `/tmp/tps-fakebin-${port}`
+  await Bun.$`mkdir -p ${bin} && printf '#!/bin/sh\nsleep 30\n' > ${bin}/claude && chmod +x ${bin}/claude`
+  const p = Bun.spawn(["bun", "tps.ts", "claude"], {
+    env: { ...process.env, TPS_PORT: String(port), PATH: `${bin}:${process.env.PATH}` }, stdout: "pipe", stderr: "pipe",
+  })
+  await Bun.sleep(1200)
+  server.stop(true) // real proxy goes away...
+  const squatter = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("evil") }) // ...squatter moves in
+  const code = await p.exited
+  expect(code).toBe(1)
+  expect(await new Response(p.stderr).text()).toContain("refusing")
   squatter.stop(true)
 })

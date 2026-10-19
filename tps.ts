@@ -23,17 +23,31 @@ env:
   TPS_PORT   proxy port (default 8787)
   TPS_HOME   where the request log lives (default ~/.tps)`
 
+const REFUSED = `tps: port ${PORT} is held by something that isn't your tps proxy; refusing to send your credentials to it.
+Stop it, or set TPS_PORT to a free port.`
+
+// Does whatever listens on the port prove it is *our* proxy (same per-user secret, bound to this port)?
+// "foreign" = something else answered, which could be squatting the port to collect the CLI's API keys.
+async function verify(): Promise<"ok" | "foreign" | "down"> {
+  const nonce = randomBytes(16).toString("hex")
+  try {
+    const got = await (await fetch(`${BASE}/_tps/whoami?nonce=${nonce}`, { signal: AbortSignal.timeout(2000) })).text()
+    return got === sign(`${nonce}:${PORT}`) ? "ok" : "foreign"
+  } catch { return "down" }
+}
+
 // NOTE: an embedded proxy dies with the CLI that started it; keep `tps` open in a side pane to host it for several sessions.
 async function ensureProxy() {
   try { startProxy(PORT); return } catch {}
-  // Port taken: only trust it if it proves it is *our* proxy (same per-user secret). Anything else could be
-  // squatting the port to collect the API keys the CLI is about to send.
-  const nonce = randomBytes(16).toString("hex")
-  const got = await fetch(`${BASE}/_tps/whoami?nonce=${nonce}`, { signal: AbortSignal.timeout(2000) }).then((r) => r.text()).catch(() => "")
-  if (got !== sign(nonce)) {
-    console.error(`tps: port ${PORT} is held by something that isn't your tps proxy; refusing to send your credentials to it.\nStop it, or set TPS_PORT to a free port.`)
-    process.exit(1)
-  }
+  if ((await verify()) !== "ok") { console.error(REFUSED); process.exit(1) }
+}
+
+// Verified once at startup is not enough: if the proxy we attached to exits, a squatter could take the port while
+// the CLI keeps running. Re-check twice a second and stop the CLI as soon as a foreign listener answers.
+// NOTE: this narrows the window to ~0.5s, it can't close it; loopback TCP has no stronger identity.
+let blocked = false
+function guard(proc: { kill(): void }) {
+  setInterval(async () => { if ((await verify()) === "foreign") { blocked = true; proc.kill() } }, 500)
 }
 
 const readJson = (p: string) => existsSync(p) ? Bun.JSONC.parse(readFileSync(p, "utf8")) as any : {}
@@ -85,7 +99,11 @@ async function run(cli: string) {
   const out = process.stdout
   if (!out.isTTY || !process.stdin.isTTY) { // piped / scripted: no status bar
     process.on("SIGINT", () => {}) // the CLI gets the same signal and decides what to do
-    process.exit(await Bun.spawn([cli, ...argv], { env: full, stdio: ["inherit", "inherit", "inherit"] }).exited)
+    const child = Bun.spawn([cli, ...argv], { env: full, stdio: ["inherit", "inherit", "inherit"] })
+    guard(child)
+    const status = await child.exited
+    if (blocked) { console.error(REFUSED); process.exit(1) }
+    process.exit(status)
   }
 
   // Run the CLI in a pseudo-terminal one row short and keep a live status bar on the last row.
@@ -98,6 +116,7 @@ async function run(cli: string) {
     terminal: { cols: out.columns, rows: out.rows - 1, data: (_t, d) => out.write(d) },
   })
   region()
+  guard(proc)
   process.stdin.setRawMode(true)
   process.stdin.on("data", (d) => proc.terminal!.write(d)) // ctrl-c etc. reach the CLI as plain keystrokes
   out.on("resize", () => { proc.terminal!.resize(out.columns, out.rows - 1); region(); bar() })
@@ -110,6 +129,7 @@ async function run(cli: string) {
   clearInterval(tick)
   process.stdin.setRawMode(false)
   out.write(`\x1b7\x1b[r\x1b[${out.rows};1H\x1b[2K\x1b8`) // drop scroll region + status row
+  if (blocked) { console.error(REFUSED); process.exit(1) }
   process.exit(code)
 }
 
